@@ -1,0 +1,31 @@
+{
+  "schema": "micar-whitepaper-linter.proof.v1",
+  "productId": "micar-whitepaper-linter",
+  "proofGeneratedOn": "2026-10-26",
+  "capabilities": [
+    "deterministic-whitepaper-lint",
+    "review-table-export",
+    "draft-remediation",
+    "github-action",
+    "whitepaper-starter-template",
+    "title-ii-whitepaper-study"
+  ],
+  "interfaces": [
+    "micar-whitepaper-linter",
+    "micar-lint",
+    "micar-lint-batch",
+    "micar-study-report",
+    "micar-review-summary",
+    "action.yml"
+  ],
+  "outputContract": "micar-whitepaper-linter.review-control-profile.v1",
+  "reviewBoundary": {
+    "humanReviewRequired": true,
+    "externalActionAllowed": false,
+    "filingAllowed": false
+  },
+  "verification": {
+    "command": "make check",
+    "contractTest": "tests/test_proof_contract.py"
+  }
+}

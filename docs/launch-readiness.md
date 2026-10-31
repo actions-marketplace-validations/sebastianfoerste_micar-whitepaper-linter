@@ -4,7 +4,7 @@ This document helps a reviewer understand, run and evaluate the MiCAR Whitepaper
 
 ## What this repo proves
 
-The linter translates MiCAR white-paper review into deterministic, testable software rules. It does not replace legal judgment. It creates a first-pass quality gate that finds structural gaps, missing disclosures, thin sections and regime-specific review issues before a lawyer performs the substantive review.
+The linter turns the disclosure checklist of MiCAR white-paper review into deterministic, testable software rules. It checks keywords, section length and structure; it does not replace legal judgment. It creates a first-pass quality gate that finds structural gaps, missing disclosures, thin sections and regime-specific review issues before a lawyer performs the substantive review.
 
 The core proof is legal automation discipline: rule IDs, citations, severity levels, machine-readable output, strict mode and examples that are safe to inspect publicly.
 
@@ -12,7 +12,7 @@ The core proof is legal automation discipline: rule IDs, citations, severity lev
 
 ```mermaid
 flowchart TD
-  A[White paper JSON draft] --> B[Regime detector]
+  A[White paper draft: JSON, XHTML or HTML, DOCX, PDF or Markdown] --> B[Regime: JSON type field, --type or inferred]
   B --> C[Rule set selection]
   C --> D[Deterministic checks]
   D --> E[Findings with citations and severity]
@@ -24,12 +24,19 @@ flowchart TD
 
 ## Local launch path
 
-Run directly from source:
+Install the released CLI from [PyPI](https://pypi.org/project/micar-whitepaper-linter/) and run it from the repository root:
 
 ```bash
-python3 -m micar_linter examples/art-stablecoin.json
-python3 -m micar_linter examples/incomplete.json --strict
-python3 -m micar_linter examples/emt-token.json --json
+pip install micar-whitepaper-linter
+micar-lint examples/art-stablecoin.json
+```
+
+Run directly from source with [uv](https://docs.astral.sh/uv/). In a fresh clone, the first `uv run` creates `.venv` with the locked dependencies and the package from `src/`:
+
+```bash
+uv run micar-lint examples/art-stablecoin.json
+uv run micar-lint examples/incomplete.json --strict
+uv run micar-lint examples/emt-token.json --json
 ```
 
 Install as an editable CLI:
@@ -39,15 +46,15 @@ pip install -e .
 micar-lint examples/art-stablecoin.json
 ```
 
-Optional PDF and DOCX ingestion:
+DOCX ingestion needs the optional `docx` extra; PDF support is part of the base install:
 
 ```bash
-pip install -e ".[all]"
+pip install -e ".[docx]"
 ```
 
 ## Demo path
 
-1. Run the passing ART example.
+1. Run the full ART example (`examples/art-stablecoin.json`). Its sections are drafted, but run from source (`uv run`) three BLOCKERs stay open: the iXBRL format check, which a JSON draft never passes, the deposit-floor review, which never passes, and the custody of the reserve assets. Release 1.2.1 on PyPI predates the example's current wording and leaves more open.
 2. Run the incomplete example in strict mode.
 3. Show that blocker findings create a non-zero exit code.
 4. Run JSON output and inspect machine-readable findings.

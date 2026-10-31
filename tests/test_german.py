@@ -12,7 +12,7 @@ def test_german_language_auto_detection():
             "summary": "Dies ist die Zusammenfassung des Projekts. Es enthält wesentliche Informationen.",
             "risk_warning": "Das ist ein Warnhinweis bezüglich des Risikos eines Wertverlusts.",
         },
-        metadata={}
+        metadata={},
     )
     assert wp_de.language == "de"
 
@@ -24,7 +24,7 @@ def test_german_language_auto_detection():
             "summary": "This is the summary of the project. It contains key information.",
             "risk_warning": "This is a warning warning about the risk of value loss.",
         },
-        metadata={}
+        metadata={},
     )
     assert wp_en.language == "en"
 
@@ -48,14 +48,15 @@ def test_german_draft_linting():
                 "hervorragender Einstiegspunkt, der die wesentlichen Aspekte vollumfänglich abdeckt."
             ),
             "risk_warning": (
-                "Warnhinweis: Der Erwerb dieses Krypto-Assets ist mit dem Risiko eines vollständigen "
-                "Wertverlusts oder Verlusts des eingesetzten Kapitals verbunden. Es wird keine "
-                "Gewährleistung für Gewinne oder Erträge gegeben, und die vergangene Entwicklung "
-                "ist kein Indikator für zukünftige Ergebnisse. Bitte handeln Sie vorsichtig."
+                "Warnhinweis: Der Kryptowert kann seinen Wert ganz oder teilweise verlieren. Der "
+                "Kryptowert ist möglicherweise nicht immer übertragbar und möglicherweise nicht liquide. "
+                "Er fällt nicht unter die Systeme für die Entschädigung der Anleger gemäß der Richtlinie "
+                "97/9/EG und nicht unter die Einlagensicherungssysteme gemäß der Richtlinie 2014/49/EU."
             ),
             "management_statement": (
                 "Das Leitungsorgan bestätigt hiermit ausdrücklich, dass dieser vorliegende Entwurf des "
-                "Krypto-Wertpapier-Informationsblatts vollumfänglich den gesetzlichen Vorgaben entspricht und "
+                "Krypto-Wertpapier-Informationsblatts vollumfänglich Titel II der Verordnung (EU) 2023/1114 "
+                "entspricht und "
                 "inhaltlich vollständig, redlich, eindeutig sowie nicht irreführend gestaltet ist. "
                 "Alle wesentlichen Angaben wurden nach bestem Wissen und Gewissen sorgfältig "
                 "geprüft, detailliert verifiziert und freigegeben."
@@ -63,11 +64,11 @@ def test_german_draft_linting():
             "notification_date": "Datum der Notifizierung ist heute am 29. Mai 2026.",
             "language": "Die offizielle Sprache dieses Dokuments ist Deutsch, wie gesetzlich vorgesehen.",
         },
-        metadata={}
+        metadata={},
     )
-    
+
     findings = Linter(COMMON_RULES).lint(wp_de)
-    
+
     for f in findings:
         if f.rule.rule_id in (
             "COMMON.SUMMARY",

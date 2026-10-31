@@ -5,34 +5,39 @@ This document details the functional features implemented in the MiCAR Whitepape
 ---
 
 ## 1. Multiple Document Input Formats
-- **Description**: Parses white papers saved as JSON structures, DOCX files, or tagged Inline XBRL XHTML.
+- **Description**: Reads white papers saved as JSON, XHTML or HTML (including Inline XBRL and the numbered-field layout of Implementing Regulation (EU) 2024/2984), DOCX, PDF or Markdown.
 - **Related Files**:
-  - [src/micar_linter/document.py](file:///Users/sebastian/Developer/micar-whitepaper-linter/src/micar_linter/document.py)
-  - [src/micar_linter/xhtml_parser.py](file:///Users/sebastian/Developer/micar-whitepaper-linter/src/micar_linter/xhtml_parser.py)
+  - [src/micar_linter/whitepaper.py](../src/micar_linter/whitepaper.py)
+  - [src/micar_linter/document.py](../src/micar_linter/document.py)
+  - [src/micar_linter/xhtml_parser.py](../src/micar_linter/xhtml_parser.py)
+  - [src/micar_linter/numbered_fields.py](../src/micar_linter/numbered_fields.py)
 - **Status**: Fully Implemented.
 
-## 2. Regime-Specific Annex Audits
-- **Description**: Applies validation checkers based on whether the token is a standard utility token (Annex I), stablecoin (Annex II), or e-money token (Annex III).
+## 2. Regime-Specific Annex Checks
+- **Description**: Applies the rules for the regime of the crypto-asset: other crypto-assets (Annex I), asset-referenced tokens (Annex II) or e-money tokens (Annex III), each with the common rules of `common.py`. E-money tokens run `EMT_COMMON_RULES`, whose `COMMON.RISK_WARNING` checks the two warnings of Art. 51(4) MiCAR under the same rule ID.
 - **Related Files**:
-  - [src/micar_linter/rules/annex_i.py](file:///Users/sebastian/Developer/micar-whitepaper-linter/src/micar_linter/rules/annex_i.py)
-  - [src/micar_linter/rules/annex_ii.py](file:///Users/sebastian/Developer/micar-whitepaper-linter/src/micar_linter/rules/annex_ii.py)
-  - [src/micar_linter/rules/annex_iii.py](file:///Users/sebastian/Developer/micar-whitepaper-linter/src/micar_linter/rules/annex_iii.py)
+  - [src/micar_linter/rules/common.py](../src/micar_linter/rules/common.py)
+  - [src/micar_linter/rules/annex_i.py](../src/micar_linter/rules/annex_i.py)
+  - [src/micar_linter/rules/annex_ii.py](../src/micar_linter/rules/annex_ii.py)
+  - [src/micar_linter/rules/annex_iii.py](../src/micar_linter/rules/annex_iii.py)
 - **Status**: Fully Implemented.
 
 ## 3. Finding Severity Mapping
-- **Description**: Classifies findings into distinct severity levels:
-  - **Blocker**: Severe omissions causing immediate regulatory rejection.
-  - **Major**: Core missing disclosures.
-  - **Minor**: Non-binding suggestions.
-  - **Pass**: Standard compliant parameters met.
+- **Description**: Each rule has one of three severities, and each finding one of three statuses. Severity belongs to the rule, not to the finding: a BLOCKER finding can be `review` and a MAJOR finding `missing`.
+  - **Blocker**: an open finding should keep the white paper from notification or submission for approval until it is cured. Every BLOCKER finding that has not passed counts as a blocker and makes `--strict` exit 1. The draft should not enter an external review or filing workflow until the blockers are cured and a lawyer has signed off. Two BLOCKER rules never pass for a loaded draft and stay open in every CLI, Action and playground report that runs them: `COMMON.IXBRL_TAGGING` in every regime and `ANNEX_II.G.DEPOSIT_FLOOR_REVIEW` in ART reports.
+  - **Major**: the rule covers a disclosure that, if incomplete, is likely to mislead or need substantive review.
+  - **Minor**: a drafting gap to cure before publication; it does not gate notification.
+  - **Statuses**: `missing`, `review` (present but thin, without a listed term, or otherwise flagged) or `pass`. On the generic checks, `missing` means the section is empty, absent or holds only placeholders. The rules with their own logic can also return `missing` when the section has text: `COMMON.IXBRL_TAGGING` for every draft that is not XHTML or HTML, and for a saved iXBRL viewer page; `ANNEX_II.G.DEPOSIT_FLOOR_REVIEW` when the draft's reserve characterisation determines a candidate floor and the section states no percentage; and the point rules `ANNEX_I.A.P6` and `ANNEX_III.A.P6` in a numbered-field draft when none of their three template fields holds an answer. They return `review` while one of those fields is empty, holds a placeholder or "N/A", or gives no telephone number, e-mail address or number of days, and in any other draft while the section lacks one of the three. With that characterisation missing or invalid, or with the token stated not to reference an official currency, the deposit-floor rule returns `review`, even for an empty section. The two LEI rules return `missing` only when no issuer, offeror or trading platform operator section has text other than a placeholder. When a party section has text other than a placeholder but the draft gives no LEI (for `COMMON.LEI_CONSISTENCY`, no valid LEI in a party section), they return `review`, because point 5 of each party Part allows another identifier required pursuant to applicable national law in place of the LEI; once the draft gives an LEI, a party section without one does not change the result. On the generic checks a pass means the listed terms appear, any required patterns match and no prohibited pattern does, the section is long enough (for `COMMON.SUMMARY`, without the predefined warning of the template) and, in a numbered-field draft, no field of the section holds only a placeholder; `ANNEX_II.I` also needs a redemption section that mentions no par value, apart from uses that never mean par value such as "pari passu". The notification-date and language checks pass, however short the section is, when it names an existing date with day, month and a year from 1900 to 2099, written as in 2026-03-02, 02.03.2026 or 2/3/2026 or with the month in English or German (2 March 2026, 2. März 2026), or names an official EU language by its German name or by its English name as written or in capitals ("English", "ENGLISH", not "english"); any other text that is not only placeholders is `review`. The point rules pass when they find all three contact details. `ANNEX_II.G.DEPOSIT_FLOOR_REVIEW` never passes, and `COMMON.IXBRL_TAGGING` never passes for a loaded draft. A pass is not a compliance opinion.
 - **Related Files**:
-  - [src/micar_linter/rules/base.py](file:///Users/sebastian/Developer/micar-whitepaper-linter/src/micar_linter/rules/base.py)
+  - [src/micar_linter/rules/base.py](../src/micar_linter/rules/base.py)
+  - [src/micar_linter/linter.py](../src/micar_linter/linter.py)
 - **Status**: Fully Implemented.
 
 ## 4. Multi-Format Report Exporter
-- **Description**: Formats logs as markdown reports or raw JSON structures.
+- **Description**: Renders the report as text, JSON, a Markdown audit log or a coverage table, and writes SARIF, a job summary and workflow annotations for CI (`ci_outputs.py`).
 - **Related Files**:
-  - [src/micar_linter/report.py](file:///Users/sebastian/Developer/micar-whitepaper-linter/src/micar_linter/report.py)
+  - [src/micar_linter/report.py](../src/micar_linter/report.py)
+  - [src/micar_linter/ci_outputs.py](../src/micar_linter/ci_outputs.py)
 - **Status**: Fully Implemented.
 
 ## 5. Review Table Export

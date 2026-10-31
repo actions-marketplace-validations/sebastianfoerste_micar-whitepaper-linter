@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from micar_linter.document import match_heading_to_section
+from micar_linter.document import match_heading_to_section, sections_from_lines
 
 MIN_TEXT_WORDS = 80
 
@@ -64,6 +64,8 @@ def file_sha256(path: Path) -> str:
 def _load_html(path: Path) -> LoadedDocument:
     from lxml import etree
 
+    from micar_linter.xhtml_parser import element_text, mark_spacer_gaps
+
     raw = path.read_bytes()
     warnings: list[str] = []
     try:
@@ -79,9 +81,10 @@ def _load_html(path: Path) -> LoadedDocument:
         tree = etree.parse(str(path), parser=parser).getroot()
         warnings.append("parsed_with_html_recovery")
 
+    # The spacer widths are read from the CSS, so before the style elements go.
+    mark_spacer_gaps(tree)
     _remove_non_visible_elements(tree)
-    text_parts = [_normalize_text(text) for text in tree.xpath("//text()[normalize-space()]")]
-    text = _normalize_text(" ".join(part for part in text_parts if part))
+    text = element_text(tree)
     sections = _sections_from_html_tree(tree)
     ixbrl_tags = _ixbrl_tag_names(tree)
     labels = _html_labels(tree)
@@ -136,7 +139,8 @@ def _load_pdf(path: Path) -> LoadedDocument:
             page_text.append(extracted)
 
     text = _normalize_text("\n".join(page_text))
-    sections = _sections_from_lines(text.splitlines())
+    # The normalized text is one line, so the sections are read from the page lines.
+    sections = _sections_from_lines("\n".join(page_text).splitlines())
     extraction, extraction_warnings = _quality(text)
     warnings.extend(extraction_warnings)
     if reader.pages and pages_with_text == 0:
@@ -184,6 +188,8 @@ def _remove_non_visible_elements(tree: Any) -> None:
 
 
 def _sections_from_html_tree(tree: Any) -> dict[str, str]:
+    from micar_linter.xhtml_parser import element_text
+
     elements = tree.xpath(
         ".//*[local-name()='h1' or local-name()='h2' or local-name()='h3' or local-name()='h4' "
         "or local-name()='h5' or local-name()='h6' or local-name()='p' or local-name()='li' "
@@ -192,7 +198,7 @@ def _sections_from_html_tree(tree: Any) -> dict[str, str]:
     sections: dict[str, list[str]] = {}
     current_keys: list[str] = []
     for element in elements:
-        text = _normalize_text(" ".join(element.itertext()))
+        text = element_text(element)
         if not text:
             continue
         local_name = str(element.tag).split("}", 1)[-1].lower()
@@ -206,20 +212,8 @@ def _sections_from_html_tree(tree: Any) -> dict[str, str]:
 
 
 def _sections_from_lines(lines: list[str]) -> dict[str, str]:
-    sections: dict[str, list[str]] = {}
-    current_keys: list[str] = []
-    for line in lines:
-        text = _normalize_text(line)
-        if not text:
-            continue
-        matched = match_heading_to_section(text)
-        if matched and len(text) < 140:
-            current_keys = matched
-            continue
-        if current_keys:
-            for key in current_keys:
-                sections.setdefault(key, []).append(text)
-    return {key: "\n".join(values) for key, values in sections.items()}
+    """The shape rule of micar-lint, without font information, so a body line naming a section opens none."""
+    return sections_from_lines(_normalize_text(line) for line in lines)
 
 
 def _ixbrl_tag_names(tree: Any) -> list[str]:

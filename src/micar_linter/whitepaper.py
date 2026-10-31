@@ -56,20 +56,32 @@ class Whitepaper:
         return "de" if de_count > en_count else "en"
 
 
-def load_whitepaper(path: Path) -> Whitepaper:
-    """Load and validate a white paper JSON, PDF, DOCX, Markdown, or XHTML file."""
+def load_whitepaper(path: Path, whitepaper_type: WhitepaperType | None = None) -> Whitepaper:
+    """Load and validate a white paper JSON, PDF, DOCX, Markdown, or XHTML file.
+
+    whitepaper_type states the regime for document formats. A JSON draft carries its own "type".
+    """
     suffix = path.suffix.lower()
 
     if suffix == ".json":
         return _load_json(path)
     if suffix in (".pdf", ".docx", ".xhtml", ".html", ".md"):
-        return _load_document(path, suffix)
+        return _load_document(path, suffix, whitepaper_type)
     raise SystemExit(f"Unsupported file format '{suffix}'. Expected: .json, .pdf, .docx, .xhtml, .html, .md")
 
 
 _RESERVED_METADATA_KEYS = (
+    # Set only by the document loaders: anchors and the iXBRL message read it, and anchors parse the file.
+    "source_file",
     "ixbrl_validated",
     "ixbrl_issues",
+    "extraction_notes",
+    # Set by the XHTML loader for a saved iXBRL viewer page; the iXBRL message reads it.
+    "script_packed_source",
+    # Set by the XHTML loader for a numbered-field draft: the fields of each section that hold only a
+    # placeholder, which the shared checks name, and the answer of every field, which the point rules read.
+    "placeholder_fields",
+    "numbered_fields",
     "reserve_characterisation_reviewed_by",
     "reserve_characterisation_reviewed_on",
 )
@@ -98,10 +110,7 @@ def _load_json(path: Path) -> Whitepaper:
             + ", ".join(t.value for t in WhitepaperType)
         ) from exc
 
-    sections = {
-        str(k): (v if isinstance(v, str) else str(v))
-        for k, v in data["sections"].items()
-    }
+    sections = {str(k): (v if isinstance(v, str) else str(v)) for k, v in data["sections"].items()}
     metadata = {
         k: v
         for k, v in data.items()
@@ -118,41 +127,126 @@ def _load_json(path: Path) -> Whitepaper:
     )
 
 
-def _load_document(path: Path, suffix: str) -> Whitepaper:
+VIEWER_PAGE_NOTE = (
+    "This file is a saved iXBRL viewer page. The checks read the white paper text packed inside it, "
+    "as the viewer renders it, and that rendering can differ from the XHTML document itself. "
+    "Its iXBRL format was not checked."
+)
+VIEWER_EMPTY_NOTE = (
+    "No section heading or numbered field was found in the white paper this page carries, "
+    "so the content checks find no section text to read."
+)
+
+
+def _unpack_viewer_page(path: Path) -> bytes:
+    """Return the markup a saved iXBRL viewer page writes into itself, or stop with the reason."""
+    from micar_linter.xhtml_parser import (
+        MAX_UNPACKED_BYTES,
+        PackedPageTooLarge,
+        SeveralPackedDocuments,
+        is_script_packed,
+        unpack_script_payload,
+    )
+
+    try:
+        document = unpack_script_payload(path)
+    except PackedPageTooLarge:
+        raise SystemExit(
+            f"{path.name} is a saved iXBRL viewer page whose packed white paper unpacks to more than "
+            f"{MAX_UNPACKED_BYTES // (1024 * 1024)} MB, the limit for unpacking. Check the white paper's own "
+            "XHTML file instead; for a published white paper, that is the file in the ESMA register."
+        ) from None
+    except SeveralPackedDocuments:
+        raise SystemExit(
+            f"{path.name} is a saved iXBRL viewer page that packs more than one document, so which one is "
+            "the white paper is unclear. Check the white paper's own XHTML file instead; for a published "
+            "white paper, that is the file in the ESMA register."
+        ) from None
+    if document is None or is_script_packed(document):
+        raise SystemExit(
+            f"{path.name} holds no white paper text that can be read: its content is packed inside a script, "
+            "as in a saved iXBRL viewer page, in a form that cannot be unpacked. Check the white paper's own "
+            "XHTML file instead; for a published white paper, that is the file in the ESMA register."
+        )
+    return document
+
+
+def _load_document(path: Path, suffix: str, whitepaper_type: WhitepaperType | None) -> Whitepaper:
     if not path.exists():
         raise SystemExit(f"File not found: {path}")
 
     ixbrl_issues = []
     ixbrl_validated = False
+    script_packed = False
+    extraction_notes: tuple[str, ...] = ()
+    placeholder_fields: dict[str, tuple[str, ...]] = {}
+    numbered_fields: dict[str, str] | None = None
+    extracted = ""
     try:
         if suffix == ".pdf":
-            from micar_linter.document import load_from_pdf
+            from micar_linter.document import parse_pdf
 
-            sections = load_from_pdf(path)
+            parsed = parse_pdf(path)
+            sections, extracted = parsed.sections, parsed.text
         elif suffix == ".docx":
-            from micar_linter.document import load_from_docx
+            from micar_linter.document import parse_docx
 
-            sections = load_from_docx(path)
+            parsed = parse_docx(path)
+            sections, extracted = parsed.sections, parsed.text
         elif suffix == ".md":
             from micar_linter.document import load_from_markdown
 
             sections = load_from_markdown(path)
         else:
             from micar_linter.ixbrl import validate_ixbrl
-            from micar_linter.xhtml_parser import load_from_xhtml
+            from micar_linter.numbered_fields import (
+                extract_numbered_fields,
+                field_answers,
+                is_numbered_layout,
+                sections_from_numbered_fields,
+            )
+            from micar_linter.xhtml_parser import is_script_packed, load_from_xhtml
 
-            sections = load_from_xhtml(path)
-            ixbrl_issues = validate_ixbrl(path)
-            ixbrl_validated = True
+            script_packed = is_script_packed(path)
+            source = _unpack_viewer_page(path) if script_packed else path
+            fields = extract_numbered_fields(source)
+            if is_numbered_layout(fields):
+                # The template wording names every regime ("not an asset-referenced token"),
+                # so the regime of a numbered white paper is never inferred from its text.
+                if whitepaper_type is None:
+                    subject = f"The white paper packed in {path.name}" if script_packed else path.name
+                    raise SystemExit(
+                        f"{subject} uses the numbered fields of Implementing Regulation (EU) 2024/2984. "
+                        "State the regime explicitly: other, art or emt."
+                    )
+                sections, extraction_notes, placeholder_fields = sections_from_numbered_fields(
+                    fields, whitepaper_type
+                )
+                numbered_fields = field_answers(fields, whitepaper_type)
+            else:
+                sections = load_from_xhtml(source)
+            if script_packed:
+                # A viewer's rendering is not the XHTML document itself, so validate_ixbrl does not run.
+                # The first-page statement is found by its wording, not by a heading or field.
+                found = sections.keys() - {"not_approved_statement"}
+                viewer_notes = (VIEWER_PAGE_NOTE, VIEWER_EMPTY_NOTE) if not found else (VIEWER_PAGE_NOTE,)
+                extraction_notes = (*viewer_notes, *extraction_notes)
+            else:
+                ixbrl_issues = validate_ixbrl(path)
+                ixbrl_validated = True
     except SystemExit:
         raise
     except Exception as exc:
         raise SystemExit(f"Error reading document {path}: {exc}") from exc
 
-    full_text = "\n".join(sections.values()).lower()
+    # The regime of a PDF or DOCX is inferred from its whole text: a heading ("Reserve of Assets"), which is
+    # not section body, or text in no section may be all that names it.
+    full_text = (extracted or "\n".join(sections.values())).lower()
     art_markers = ("asset-referenced", "stabilisation mechanism", "reserve of assets")
     emt_markers = ("e-money token", "referenced currency", "safeguarding of funds")
-    if any(marker in full_text for marker in art_markers):
+    if whitepaper_type is not None:
+        wp_type = whitepaper_type
+    elif any(marker in full_text for marker in art_markers):
         wp_type = WhitepaperType.ART
     elif any(marker in full_text for marker in emt_markers):
         wp_type = WhitepaperType.EMT
@@ -162,6 +256,8 @@ def _load_document(path: Path, suffix: str) -> Whitepaper:
     if wp_type is WhitepaperType.ART:
         sections.pop("emt", None)
         sections.pop("crypto_asset", None)
+        # Art. 19 MiCAR prescribes no first-page statement, so no ART rule reads one.
+        sections.pop("not_approved_statement", None)
     elif wp_type is WhitepaperType.EMT:
         sections.pop("art", None)
         sections.pop("crypto_asset", None)
@@ -174,7 +270,13 @@ def _load_document(path: Path, suffix: str) -> Whitepaper:
         "source_file": str(path),
         "ixbrl_validated": ixbrl_validated,
         "ixbrl_issues": tuple(ixbrl_issues),
+        "extraction_notes": extraction_notes,
+        "script_packed_source": script_packed,
+        "placeholder_fields": placeholder_fields,
     }
+    # Only a numbered-field draft carries the key, so a point rule can tell which layout it reads.
+    if numbered_fields is not None:
+        metadata["numbered_fields"] = numbered_fields
 
     return Whitepaper(
         title=title,

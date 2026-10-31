@@ -169,6 +169,10 @@ def test_study_report_contains_required_sections_and_pending_review(tmp_path: Pa
         assert heading in report
     assert "Human review status: pending_review" in report
     assert "Source manifest input SHA-256" in report
+    # The reproduction commands must not overwrite the committed study files.
+    reproducibility = report.split("## Reproducibility", 1)[1].split("\n## ", 1)[0]
+    assert "--out /tmp/micar-study/" in reproducibility
+    assert "--out studies/" not in reproducibility
 
 
 def test_study_rules_accept_response_time_and_ticker_title(tmp_path: Path):
@@ -211,11 +215,7 @@ def test_study_rules_accept_response_time_and_ticker_title(tmp_path: Path):
     (cache / "WP-001.html").write_text(f"<html><body><p>{text}</p></body></html>", encoding="utf-8")
 
     payload = build_study_findings(manifest_path, cache)
-    finding_ids = {
-        finding["rule_id"]
-        for result in payload["results"]
-        for finding in result["findings"]
-    }
+    finding_ids = {finding["rule_id"] for result in payload["results"] for finding in result["findings"]}
     rendered = render_study_findings_json(payload)
 
     assert "ANNEX_I_PART_A_06_CONTACT_RESPONSE_PERIOD" not in finding_ids

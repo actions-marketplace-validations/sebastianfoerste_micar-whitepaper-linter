@@ -1,8 +1,8 @@
 UV ?= uv
 
-.PHONY: check install demo lint test smoke review-bundle
+.PHONY: check install demo demo-image lint test smoke review-bundle playground-check playground-samples sample-reports template-check template-export dist
 
-check: lint test smoke review-bundle
+check: lint test smoke review-bundle playground-check template-check
 
 install:
 	$(UV) sync --extra dev
@@ -10,8 +10,11 @@ install:
 demo:
 	$(UV) run --extra dev python -m micar_linter examples/incomplete.json
 
+demo-image:
+	$(UV) run python scripts/render_demo.py
+
 lint:
-	$(UV) run --extra dev ruff check src tests
+	$(UV) run --extra dev ruff check src tests scripts
 
 test:
 	$(UV) run --extra dev pytest -q
@@ -22,3 +25,24 @@ smoke:
 review-bundle:
 	$(UV) run --extra dev python -m micar_linter examples/art-stablecoin.json \
 		--review-bundle-dir dist/review-bundle
+
+playground-check:
+	node --check docs/playground/app.mjs
+	node --check docs/playground/runtime.mjs
+	node --test tests/playground/*.test.mjs
+
+playground-samples:
+	$(UV) run python scripts/build_playground_samples.py
+
+sample-reports:
+	$(UV) run python scripts/build_sample_reports.py
+
+template-check:
+	python3 scripts/check_whitepaper_starter.py
+
+template-export:
+	scripts/export-whitepaper-starter.sh
+
+dist:
+	rm -rf dist
+	tmp="$$(mktemp -d)" && git archive HEAD | tar -x -C "$$tmp" && $(UV) build --out-dir "$(CURDIR)/dist" "$$tmp"; status=$$?; rm -rf "$$tmp"; exit $$status

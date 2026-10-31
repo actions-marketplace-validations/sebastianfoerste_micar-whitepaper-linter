@@ -3,14 +3,26 @@
 from __future__ import annotations
 
 import json
+import re
+from collections.abc import Iterable
 
+from micar_linter import citations
 from micar_linter.linter import Report
+from micar_linter.rules.base import Severity
 
 _STATUS_ICON = {"pass": "PASS  ", "review": "REVIEW", "missing": "MISS  "}
 _TITLE_BAR = "=" * 78
+# Notification and approval provisions named in the blocker footer, in canonical German form.
+_FILING_CITATION = (
+    "Art. 8 Abs. 1, Art. 16 Abs. 2 UAbs. 2, Art. 17 Abs. 1 Buchst. a, Art. 18 Abs. 2 Buchst. k, "
+    "Art. 51 Abs. 11 MiCAR"
+)
+# Characters that start inline Markdown or HTML. The loader's notes contain none, but the title and the
+# source path come from the draft or its file name, and an unrecognised-section warning quotes a section key.
+_MARKDOWN_MARKUP = re.compile(r"[\\`*_~\[\]<>&]")
 
 
-def render_text(report: Report) -> str:
+def render_text(report: Report, citation_style: str = "en") -> str:
     lines: list[str] = []
     lines.append(f"MiCAR Whitepaper Linter - {report.title}")
     lines.append(f"Whitepaper type: {report.whitepaper_type.value.upper()}")
@@ -30,7 +42,9 @@ def render_text(report: Report) -> str:
         icon = _STATUS_ICON[finding.status]
         sev = rule.severity.label
         lines.append(f"[{icon}] [{sev:7}] {rule.rule_id}  {rule.label}")
-        lines.append(f"           Cite:  {rule.citation}")
+        lines.append(f"           Cite:  {citations.render(rule.citation, citation_style)}")
+        for url in citations.source_urls(rule.citation):
+            lines.append(f"           Text:  {url}")
         lines.append(f"           Section: '{rule.section}'  ({finding.word_count} words)")
         for issue in finding.issues:
             lines.append(f"           -  {issue}")
@@ -47,9 +61,10 @@ def render_text(report: Report) -> str:
         lines.append("All required disclosures present. Lawyer review still required.")
     else:
         lines.append(
-            "First-pass screening only. The draft is not package-ready. The "
-            "MiCAR notification under Art. 8 / 17 / 49 MiCAR should not enter an external review "
-            "or filing workflow until BLOCKER items are cured and a lawyer has signed off."
+            "First-pass screening only. The draft is not package-ready. The white paper "
+            f"notification or submission for approval ({citations.render(_FILING_CITATION, citation_style)}) "
+            "should not enter an external review or filing workflow until BLOCKER items are cured and a "
+            "lawyer has signed off."
         )
     lines.append("This tool is not legal advice.")
     return "\n".join(lines)
@@ -71,6 +86,8 @@ def render_json(report: Report) -> str:
             {
                 "rule_id": f.rule.rule_id,
                 "citation": f.rule.citation,
+                "citation_en": citations.to_english(f.rule.citation),
+                "sources": citations.source_urls(f.rule.citation),
                 "section": f.rule.section,
                 "label": f.rule.label,
                 "severity": f.rule.severity.label,
@@ -96,12 +113,13 @@ def render_audit_log(report: Report, source_file: str, sha256: str) -> str:
     lines = []
     lines.append("# MiCAR Whitepaper Compliance Review Log")
     lines.append("")
-    lines.append(f"- **Document Title**: {report.title}")
+    lines.append(f"- **Document Title**: {markdown_line(report.title)}")
     lines.append(f"- **Regime/Type**: {report.whitepaper_type.value.upper()}")
-    lines.append(f"- **Source File**: {source_file}")
+    lines.append(f"- **Source File**: {markdown_line(source_file)}")
     lines.append(f"- **SHA-256 Checksum**: `{sha256}`")
     lines.append(f"- **Review Timestamp**: {now_str}")
     lines.append("")
+    lines.extend(render_extraction_notes(report.warnings))
     lines.append("## Rule Compliance Checklist")
     lines.append("")
     lines.append("| Rule ID | Citation | Description | Severity | Status | Reviewer Checked |")
@@ -130,6 +148,10 @@ def render_audit_log(report: Report, source_file: str, sha256: str) -> str:
             "and a lawyer has signed off."
         )
         lines.append("")
+    elif not report.is_clean:
+        lines.append("> [!WARNING]")
+        lines.append(_open_findings_note(report))
+        lines.append("")
     else:
         lines.append("> [!NOTE]")
         lines.append("> All automated checks passed. Substantive lawyer review is still required.")
@@ -152,6 +174,49 @@ def render_audit_log(report: Report, source_file: str, sha256: str) -> str:
     return "\n".join(lines)
 
 
+def _open_findings_note(report: Report) -> str:
+    """The audit log note while findings are open but none is a BLOCKER: how many are open, by severity."""
+    open_findings = [f for f in report.findings if not f.passed]
+    by_severity = ", ".join(
+        f"{count} {severity.label}"
+        for severity in sorted(Severity, reverse=True)
+        if (count := sum(f.rule.severity is severity for f in open_findings))
+    )
+    one = len(open_findings) == 1
+    return (
+        f"> **{len(open_findings)} {'finding is' if one else 'findings are'} still open ({by_severity}) "
+        "and no BLOCKER finding is open.** The draft still needs the open "
+        f"{'finding' if one else 'findings'} resolved or reviewed, and substantive lawyer review "
+        "is still required."
+    )
+
+
+def markdown_line(text: str) -> str:
+    """Text as one line of Markdown that renders as written: its line breaks become spaces and its markup
+    characters are escaped, so text from the draft cannot add a heading, an alert, an image or HTML."""
+    return _MARKDOWN_MARKUP.sub(r"\\\g<0>", " ".join(text.split()))
+
+
+def render_extraction_notes(warnings: Iterable[str]) -> list[str]:
+    """The Markdown section that lists the report warnings, for a review file to place before its results.
+
+    No lines when there are no warnings. Each warning is one list item written with `markdown_line`,
+    because an unrecognised-section warning quotes a section key from the draft.
+    """
+    notes = [markdown_line(warning) for warning in warnings]
+    if not notes:
+        return []
+    return [
+        "## Extraction Notes",
+        "",
+        "The linter recorded these notes while reading the draft. They can qualify any automated result, "
+        "including a Pass, so read them before relying on the results.",
+        "",
+        *(f"- {note}" for note in notes),
+        "",
+    ]
+
+
 def render_coverage_table(report: Report) -> str:
     lines = []
     lines.append(f"MiCAR Whitepaper Coverage Matrix - {report.title}")
@@ -164,9 +229,7 @@ def render_coverage_table(report: Report) -> str:
         citation = finding.rule.citation
         severity = finding.rule.severity.label
         status = finding.status.upper()
-        lines.append(
-            f"| {rule_id:<20} | {citation:<15} | {severity:<8} | {status:<7} |"
-        )
+        lines.append(f"| {rule_id:<20} | {citation:<15} | {severity:<8} | {status:<7} |")
     lines.append("=" * 78)
     lines.append(
         "Pass: {p}  |  Review: {r}  |  Missing: {m}  |  Blockers: {b}".format(

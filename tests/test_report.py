@@ -1,0 +1,459 @@
+"""Report language is load-bearing (see CONTRIBUTING.md). Render real reports and check that the
+"not package-ready" blocker message and the lawyer sign-off section appear exactly when report.py
+promises them: the text report keeps the blocker message while any finding is open, the audit log
+while any BLOCKER finding is open, and the audit log always ends with the lawyer sign-off section.
+The audit log says that all automated checks passed only when every finding passes; while a MAJOR or
+MINOR finding is open and no BLOCKER is, it says how many findings are open, by severity.
+When the report has warnings, the audit log lists them under Extraction Notes, after the document
+facts and before the rule table, and so do the review bundle's review table and sign-off page before
+their results; without warnings none of them has that section. In all three files the draft title,
+the audit log's source path and the warnings print as written, so a line break or Markdown in them
+cannot add a heading, an alert or HTML."""
+
+import json
+import re
+from dataclasses import replace
+from pathlib import Path
+
+import pytest
+
+from micar_linter.cli import main
+from micar_linter.linter import Report, lint_whitepaper
+from micar_linter.numbered_fields import MERGED_LABELS_NOTE
+from micar_linter.report import _TITLE_BAR, render_audit_log, render_text
+from micar_linter.review_bundle import render_signoff_page
+from micar_linter.review_table import build_review_table, render_review_table_markdown
+from micar_linter.rules import RULESETS
+from micar_linter.rules.base import Finding, Severity
+from micar_linter.whitepaper import VIEWER_PAGE_NOTE, WhitepaperType, load_whitepaper
+
+ROOT = Path(__file__).resolve().parents[1]
+INCOMPLETE = ROOT / "examples/incomplete.json"
+NUMBERED = ROOT / "examples/numbered-other-draft.xhtml"
+
+NOT_PACKAGE_READY = "not package-ready"
+TEXT_BLOCKER = "First-pass screening only. The draft is not package-ready."
+# The notification and approval provisions in each citation style, then the clause they gate.
+TEXT_FILING = {
+    "en": "(Art. 8(1), Art. 16(2), second subparagraph, Art. 17(1), point (a), Art. 18(2), point (k), "
+    "Art. 51(11) MiCAR) should not enter an external review or filing workflow",
+    "de": "(Art. 8 Abs. 1, Art. 16 Abs. 2 UAbs. 2, Art. 17 Abs. 1 Buchst. a, Art. 18 Abs. 2 Buchst. k, "
+    "Art. 51 Abs. 11 MiCAR) should not enter an external review or filing workflow",
+}
+TEXT_SIGN_OFF = "until BLOCKER items are cured and a lawyer has signed off."
+TEXT_NOTIFICATION = "The white paper notification or submission for approval"
+TEXT_CLEAN = "All required disclosures present. Lawyer review still required."
+NOT_LEGAL_ADVICE = "This tool is not legal advice."
+LOG_BLOCKER = (
+    "> **BLOCKER issues are currently open.** The draft is not package-ready for an external review "
+    "or filing workflow until the gaps are cured and a lawyer has signed off."
+)
+LOG_CLEAN = "> All automated checks passed. Substantive lawyer review is still required."
+LOG_OPEN_ONE_MAJOR = (
+    "> **1 finding is still open (1 MAJOR) and no BLOCKER finding is open.** The draft still needs the open "
+    "finding resolved or reviewed, and substantive lawyer review is still required."
+)
+LOG_OPEN_ONE_MINOR = (
+    "> **1 finding is still open (1 MINOR) and no BLOCKER finding is open.** The draft still needs the open "
+    "finding resolved or reviewed, and substantive lawyer review is still required."
+)
+LOG_OPEN_TWO_MAJOR = (
+    "> **2 findings are still open (2 MAJOR) and no BLOCKER finding is open.** The draft still needs the "
+    "open findings resolved or reviewed, and substantive lawyer review is still required."
+)
+LOG_OPEN_MAJOR_AND_MINOR = (
+    "> **3 findings are still open (2 MAJOR, 1 MINOR) and no BLOCKER finding is open.** The draft still needs "
+    "the open findings resolved or reviewed, and substantive lawyer review is still required."
+)
+SIGN_OFF_HEADING = "## Lawyer Sign-off"
+SIGN_OFF_TEXT = (
+    "The reviewing lawyer must sign below only after reviewing the automated findings, "
+    "the source draft and any filing decision independently."
+)
+SIGN_OFF_FIELDS = ("Reviewer Name:", "Date of Review:", "Signature:")
+NOTES_HEADING = "## Extraction Notes"
+NOTES_INTRO = (
+    "The linter recorded these notes while reading the draft. They can qualify any automated result, "
+    "including a Pass, so read them before relying on the results."
+)
+# The line each review file's results start with: the extraction notes must come before it.
+LOG_RESULTS = "## Rule Compliance Checklist"
+REVIEW_TABLE_RESULTS = "| Rule ID | Citation | Status | Blocker | Reviewer decision | Anchor verified |"
+SIGNOFF_RESULTS = "## Required Review Steps"
+
+
+def _report(
+    *open_rules: str,
+    status: str = "review",
+    missing: tuple[str, ...] = (),
+    whitepaper_type: WhitepaperType = WhitepaperType.ART,
+) -> Report:
+    """A synthetic report built from a real rule set, ART unless another type is given: every rule
+    passes except `open_rules`, which get `status`, and `missing`, which are missing."""
+    statuses = dict.fromkeys(open_rules, status) | dict.fromkeys(missing, "missing")
+    findings = tuple(
+        Finding(rule=rule, status=statuses.get(rule.rule_id, "pass"), word_count=100)
+        for rule in RULESETS[whitepaper_type]
+    )
+    return Report(title="Synthetic Token", whitepaper_type=whitepaper_type, findings=findings)
+
+
+def _rule_ids(severity: Severity, whitepaper_type: WhitepaperType = WhitepaperType.ART) -> list[str]:
+    return [rule.rule_id for rule in RULESETS[whitepaper_type] if rule.severity is severity]
+
+
+def _first_rule(severity: Severity, whitepaper_type: WhitepaperType = WhitepaperType.ART) -> str:
+    return _rule_ids(severity, whitepaper_type)[0]
+
+
+def _log_alert(log: str) -> str:
+    """The audit log's alert, whole: its blockquote lines, the only lines of the log that start with '>'."""
+    return "\n".join(line for line in log.splitlines() if line.startswith(">"))
+
+
+def _extraction_notes(markdown: str, results: str = LOG_RESULTS) -> list[str]:
+    """The list items of the Extraction Notes section. The section must open with its intro and end
+    before the line `results`, where the file's results start."""
+    lines = markdown.splitlines()
+    assert lines.count(NOTES_HEADING) == 1, f"expected the line '{NOTES_HEADING}' exactly once"
+    start, end = lines.index(NOTES_HEADING), lines.index(results)
+    assert start < end, "the extraction notes must come before the results"
+    assert lines[start + 1 : start + 4] == ["", NOTES_INTRO, ""]
+    assert lines[end - 1] == ""
+    return lines[start + 4 : end - 1]
+
+
+# The ART rule set has no MINOR rule, so the MINOR states use the OTHER rule set, which has all three.
+LOG_STATES = {
+    "clean": (_report(), "> [!NOTE]\n" + LOG_CLEAN),
+    "minor-only": (
+        _report(_first_rule(Severity.MINOR, WhitepaperType.OTHER), whitepaper_type=WhitepaperType.OTHER),
+        "> [!WARNING]\n" + LOG_OPEN_ONE_MINOR,
+    ),
+    "major-open": (_report(_first_rule(Severity.MAJOR)), "> [!WARNING]\n" + LOG_OPEN_ONE_MAJOR),
+    "major-review-and-major-missing": (
+        _report(_rule_ids(Severity.MAJOR)[0], missing=(_rule_ids(Severity.MAJOR)[1],)),
+        "> [!WARNING]\n" + LOG_OPEN_TWO_MAJOR,
+    ),
+    "major-and-minor-open": (
+        _report(
+            *_rule_ids(Severity.MAJOR, WhitepaperType.OTHER)[:2],
+            _first_rule(Severity.MINOR, WhitepaperType.OTHER),
+            whitepaper_type=WhitepaperType.OTHER,
+        ),
+        "> [!WARNING]\n" + LOG_OPEN_MAJOR_AND_MINOR,
+    ),
+    "blocker-open": (
+        _report(_first_rule(Severity.BLOCKER), _first_rule(Severity.MAJOR)),
+        "> [!WARNING]\n" + LOG_BLOCKER,
+    ),
+}
+# One open finding of every severity a real rule set has, in each open status.
+OPEN_CASES = [
+    (whitepaper_type, severity, status)
+    for whitepaper_type in RULESETS
+    for severity in Severity
+    if _rule_ids(severity, whitepaper_type)
+    for status in ("review", "missing")
+]
+
+
+def _text_blocker_sentence(style: str) -> str:
+    """The text report's closing warning while any finding is open, whole, so no qualifier can slip in."""
+    return f"{TEXT_BLOCKER} {TEXT_NOTIFICATION} {TEXT_FILING[style]} {TEXT_SIGN_OFF}"
+
+
+def _assert_sign_off_section_closes(log: str) -> None:
+    lines = log.splitlines()
+    assert lines.count(SIGN_OFF_HEADING) == 1, f"expected the line '{SIGN_OFF_HEADING}' exactly once"
+    section = lines[lines.index(SIGN_OFF_HEADING) + 1 :]
+    assert not [line for line in section if line.startswith("#")], "the lawyer sign-off section must be last"
+    assert SIGN_OFF_TEXT in "\n".join(section)
+    for field in SIGN_OFF_FIELDS:
+        assert [line for line in section if re.fullmatch(rf"{re.escape(field)} +_+", line)], (
+            f"the lawyer sign-off section has no '{field}' line to fill in"
+        )
+
+
+@pytest.mark.parametrize("style", TEXT_FILING)
+def test_text_report_with_open_blockers_is_not_package_ready(capsys, style):
+    assert main([str(INCOMPLETE), "--citation-style", style]) == 0
+    out = capsys.readouterr().out
+    assert out.count(_TITLE_BAR) == 2, "the text report has a title bar and a footer bar"
+    _, footer = out.rsplit(_TITLE_BAR, 1)
+
+    assert _text_blocker_sentence(style) in footer
+    assert TEXT_CLEAN not in out
+    assert out.rstrip("\n").endswith(NOT_LEGAL_ADVICE)
+
+
+def test_text_report_keeps_the_blocker_message_while_a_non_blocker_finding_is_open():
+    report = _report(_first_rule(Severity.MAJOR))
+    assert not report.blockers and not report.is_clean
+
+    text = render_text(report)
+
+    assert _text_blocker_sentence("en") in text
+    assert TEXT_CLEAN not in text
+
+
+def test_clean_text_report_drops_the_blocker_message_but_keeps_lawyer_review():
+    report = _report()
+    assert report.is_clean
+
+    text = render_text(report)
+
+    assert TEXT_CLEAN in text
+    assert NOT_PACKAGE_READY not in text
+    assert "signed off" not in text
+    assert text.endswith(NOT_LEGAL_ADVICE)
+
+
+def test_audit_log_with_open_blockers_warns_and_ends_with_the_sign_off_section(tmp_path):
+    log_path = tmp_path / "audit.md"
+    assert main([str(INCOMPLETE), "--audit-log", str(log_path)]) == 0
+    log = log_path.read_text(encoding="utf-8")
+
+    assert "> [!WARNING]\n" + LOG_BLOCKER in log
+    assert LOG_CLEAN not in log
+    assert log.index(LOG_BLOCKER) < log.index(SIGN_OFF_HEADING)
+    _assert_sign_off_section_closes(log)
+
+
+def test_review_bundle_checklist_carries_the_blocker_warning_and_sign_off(tmp_path):
+    bundle = tmp_path / "bundle"
+    assert main([str(INCOMPLETE), "--review-bundle-dir", str(bundle)]) == 0
+    checklist = (bundle / "compliance-checklist.md").read_text(encoding="utf-8")
+
+    assert LOG_BLOCKER in checklist
+    _assert_sign_off_section_closes(checklist)
+
+
+@pytest.mark.parametrize("open_rules", [(), (_first_rule(Severity.MAJOR),)], ids=["clean", "major-open"])
+def test_audit_log_without_blockers_drops_the_blocker_warning_but_keeps_the_sign_off_section(open_rules):
+    report = _report(*open_rules)
+    assert not report.blockers
+
+    log = render_audit_log(report, "synthetic.json", "0" * 64)
+
+    assert NOT_PACKAGE_READY not in log
+    assert "BLOCKER issues are currently open" not in log
+    _assert_sign_off_section_closes(log)
+
+
+def test_clean_audit_log_notes_that_lawyer_review_is_still_required():
+    log = render_audit_log(_report(), "synthetic.json", "0" * 64)
+    assert LOG_CLEAN in log
+
+
+@pytest.mark.parametrize("state", LOG_STATES)
+def test_audit_log_note_matches_the_state_of_the_report(state):
+    report, alert = LOG_STATES[state]
+
+    log = render_audit_log(report, "synthetic.json", "0" * 64)
+
+    assert _log_alert(log) == alert
+    assert log.index(alert) < log.index(SIGN_OFF_HEADING)
+    _assert_sign_off_section_closes(log)
+
+
+@pytest.mark.parametrize("style", TEXT_FILING)
+@pytest.mark.parametrize("state", LOG_STATES)
+def test_audit_log_and_bundle_checklist_carry_the_same_note_in_both_citation_styles(
+    monkeypatch, tmp_path, state, style
+):
+    """The audit log prose is English in both citation styles; the review bundle checklist is the same log."""
+    report, alert = LOG_STATES[state]
+    monkeypatch.setattr("micar_linter.cli.lint_whitepaper", lambda whitepaper: report)
+    log_path, bundle = tmp_path / "audit.md", tmp_path / "bundle"
+
+    argv = [str(INCOMPLETE), "--citation-style", style, "--audit-log", str(log_path)]
+    assert main([*argv, "--review-bundle-dir", str(bundle)]) == 0
+
+    for path in (log_path, bundle / "compliance-checklist.md"):
+        log = path.read_text(encoding="utf-8")
+        assert _log_alert(log) == alert
+        _assert_sign_off_section_closes(log)
+
+
+def test_open_cases_cover_every_severity():
+    assert {severity for _, severity, _ in OPEN_CASES} == set(Severity)
+
+
+@pytest.mark.parametrize(
+    ("whitepaper_type", "severity", "status"),
+    OPEN_CASES,
+    ids=[f"{t.value}-{severity.label}-{status}" for t, severity, status in OPEN_CASES],
+)
+def test_audit_log_never_says_all_checks_passed_while_a_finding_is_open(whitepaper_type, severity, status):
+    report = _report(_first_rule(severity, whitepaper_type), status=status, whitepaper_type=whitepaper_type)
+    assert not report.is_clean
+
+    log = render_audit_log(report, "synthetic.json", "0" * 64)
+
+    assert LOG_CLEAN not in log
+    assert "checks passed" not in log.lower()
+    if severity is Severity.BLOCKER:
+        assert _log_alert(log) == "> [!WARNING]\n" + LOG_BLOCKER
+    else:
+        assert _log_alert(log) == "> [!WARNING]\n" + (
+            f"> **1 finding is still open (1 {severity.label}) and no BLOCKER finding is open.** The draft still "
+            "needs the open finding resolved or reviewed, and substantive lawyer review is still required."
+        )
+    _assert_sign_off_section_closes(log)
+
+
+@pytest.mark.parametrize("state", LOG_STATES)
+def test_audit_log_without_warnings_has_no_extraction_notes_section(state):
+    report, _ = LOG_STATES[state]
+    assert not report.warnings
+
+    log = render_audit_log(report, "synthetic.json", "0" * 64)
+
+    assert "Extraction Notes" not in log
+    assert NOTES_INTRO not in log
+    lines = log.splitlines()
+    assert lines[lines.index(LOG_RESULTS) - 2].startswith("- **Review Timestamp**: ")
+
+
+@pytest.mark.parametrize("state", LOG_STATES)
+def test_audit_log_lists_every_warning_before_the_rule_table_and_keeps_its_alert(state):
+    report, alert = LOG_STATES[state]
+    notes = (VIEWER_PAGE_NOTE, MERGED_LABELS_NOTE)
+
+    log = render_audit_log(replace(report, warnings=notes), "synthetic.json", "0" * 64)
+
+    assert _extraction_notes(log) == [f"- {note}" for note in notes]
+    assert _log_alert(log) == alert
+    _assert_sign_off_section_closes(log)
+
+
+def test_audit_log_and_bundle_checklist_list_the_numbered_field_notes(tmp_path):
+    notes = lint_whitepaper(load_whitepaper(NUMBERED, WhitepaperType.OTHER)).warnings
+    assert notes, "the numbered example marks a whole part not applicable, which the loader notes"
+    log_path, bundle = tmp_path / "audit.md", tmp_path / "bundle"
+
+    argv = [str(NUMBERED), "--type", "other", "--audit-log", str(log_path)]
+    assert main([*argv, "--review-bundle-dir", str(bundle)]) == 0
+
+    for path in (log_path, bundle / "compliance-checklist.md"):
+        log = path.read_text(encoding="utf-8")
+        assert _extraction_notes(log) == [f"- {note}" for note in notes]
+        _assert_sign_off_section_closes(log)
+
+
+def test_review_table_and_signoff_page_list_the_same_notes_before_their_results(tmp_path):
+    notes = lint_whitepaper(load_whitepaper(NUMBERED, WhitepaperType.OTHER)).warnings
+    bundle = tmp_path / "bundle"
+
+    assert main([str(NUMBERED), "--type", "other", "--review-bundle-dir", str(bundle)]) == 0
+
+    table = (bundle / "review-table.md").read_text(encoding="utf-8")
+    signoff = (bundle / "reviewer-signoff.md").read_text(encoding="utf-8")
+    assert _extraction_notes(table, REVIEW_TABLE_RESULTS) == [f"- {note}" for note in notes]
+    assert _extraction_notes(signoff, SIGNOFF_RESULTS) == [f"- {note}" for note in notes]
+
+
+def test_review_bundle_without_warnings_has_no_extraction_notes_section(tmp_path):
+    bundle = tmp_path / "bundle"
+    assert main([str(INCOMPLETE), "--review-bundle-dir", str(bundle)]) == 0
+
+    for name in ("compliance-checklist.md", "review-table.md", "reviewer-signoff.md"):
+        assert "Extraction Notes" not in (bundle / name).read_text(encoding="utf-8"), name
+
+
+def test_extraction_notes_show_a_section_key_from_the_draft_as_written(tmp_path):
+    """An unrecognised-section warning quotes the draft's key. The key stays inside one list item and adds
+    no heading, alert, Markdown link or HTML."""
+    draft = json.loads(INCOMPLETE.read_text(encoding="utf-8"))
+    key = (
+        "x\n\n> [!NOTE]\n> All automated checks passed.\n\n## Lawyer Sign-off\n"
+        "<b>*y*</b> [z](w) `v` _u_ ~t~ & \\"
+    )
+    draft["sections"][key] = "Text under a key that no rule reads."
+    source, log_path, bundle = tmp_path / "draft.json", tmp_path / "audit.md", tmp_path / "bundle"
+    source.write_text(json.dumps(draft), encoding="utf-8")
+
+    assert main([str(source), "--audit-log", str(log_path), "--review-bundle-dir", str(bundle)]) == 0
+
+    escaped = (
+        r"- Unrecognized section key 'x \> \[!NOTE\] \> All automated checks passed. ## Lawyer Sign-off "
+        r"\<b\>\*y\*\</b\> \[z\](w) \`v\` \_u\_ \~t\~ \& \\' in draft sections. "
+        "Ensure it matches required section keys."
+    )
+    log = log_path.read_text(encoding="utf-8")
+    assert _extraction_notes(log) == [escaped]
+    assert _log_alert(log) == "> [!WARNING]\n" + LOG_BLOCKER
+    _assert_sign_off_section_closes(log)
+    table = (bundle / "review-table.md").read_text(encoding="utf-8")
+    assert _extraction_notes(table, REVIEW_TABLE_RESULTS) == [escaped]
+    signoff = (bundle / "reviewer-signoff.md").read_text(encoding="utf-8")
+    assert _extraction_notes(signoff, SIGNOFF_RESULTS) == [escaped]
+    assert signoff.splitlines().count(SIGN_OFF_HEADING) == 1
+
+
+def _headings(markdown: str) -> list[str]:
+    return [line for line in markdown.splitlines() if line.startswith("#")]
+
+
+def test_review_files_show_the_draft_title_as_written(tmp_path):
+    """The title comes from the draft. It stays on its fact line and adds no heading, alert, Markdown link
+    or HTML to the audit log, the review table or the sign-off page."""
+    draft = json.loads(INCOMPLETE.read_text(encoding="utf-8"))
+    draft["title"] = (
+        "Token\n\n> [!NOTE]\n> All automated checks passed.\n\n## Lawyer Sign-off\n<img src=x> *A* & [B](c)"
+    )
+    source, log_path, bundle = tmp_path / "draft.json", tmp_path / "audit.md", tmp_path / "bundle"
+    source.write_text(json.dumps(draft), encoding="utf-8")
+
+    assert main([str(source), "--audit-log", str(log_path), "--review-bundle-dir", str(bundle)]) == 0
+
+    escaped = (
+        r"Token \> \[!NOTE\] \> All automated checks passed. ## Lawyer Sign-off "
+        r"\<img src=x\> \*A\* \& \[B\](c)"
+    )
+    log = log_path.read_text(encoding="utf-8")
+    assert f"- **Document Title**: {escaped}" in log.splitlines()
+    assert _log_alert(log) == "> [!WARNING]\n" + LOG_BLOCKER
+    assert _headings(log) == [
+        "# MiCAR Whitepaper Compliance Review Log",
+        "## Rule Compliance Checklist",
+        "## Summary of Findings",
+        SIGN_OFF_HEADING,
+    ]
+    _assert_sign_off_section_closes(log)
+    table = (bundle / "review-table.md").read_text(encoding="utf-8")
+    assert f"- Title: {escaped}" in table.splitlines()
+    assert _headings(table) == ["# MiCAR White Paper Review Table", "## Review Gate"]
+    signoff = (bundle / "reviewer-signoff.md").read_text(encoding="utf-8")
+    assert f"- Document title: {escaped}" in signoff.splitlines()
+    assert _headings(signoff) == [
+        "# MiCAR White Paper Reviewer Sign-off",
+        SIGNOFF_RESULTS,
+        "## Blockers",
+        SIGN_OFF_HEADING,
+    ]
+
+
+def test_audit_log_shows_the_source_path_as_written():
+    """A document draft takes its title from the file name, and the log also prints the path."""
+    path = "drafts/x\n## Lawyer Sign-off\n> [!NOTE]\n<img src=y>_v2.json"
+
+    log = render_audit_log(_report(), path, "0" * 64)
+
+    escaped = r"drafts/x ## Lawyer Sign-off \> \[!NOTE\] \<img src=y\>\_v2.json"
+    assert f"- **Source File**: {escaped}" in log.splitlines()
+    assert _log_alert(log) == "> [!NOTE]\n" + LOG_CLEAN
+    _assert_sign_off_section_closes(log)
+
+
+def test_ordinary_title_and_source_path_print_unchanged():
+    report = lint_whitepaper(load_whitepaper(ROOT / "examples/art-stablecoin.json"))
+    title = "Synthetic EuroStable ART White Paper"
+
+    log = render_audit_log(report, "examples/art-stablecoin.json", "0" * 64).splitlines()
+
+    assert f"- **Document Title**: {title}" in log
+    assert "- **Source File**: examples/art-stablecoin.json" in log
+    assert f"- Title: {title}" in render_review_table_markdown(build_review_table(report)).splitlines()
+    assert f"- Document title: {title}" in render_signoff_page(report).splitlines()

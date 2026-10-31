@@ -1,12 +1,14 @@
 from pathlib import Path
 
+from micar_linter.anchors import _xhtml_section_identifiers
+from micar_linter.locations import _xhtml_heading_lines
 from micar_linter.whitepaper import WhitepaperType, load_whitepaper
 from micar_linter.xhtml_parser import load_from_xhtml
 
 
 def test_load_from_xhtml(tmp_path: Path):
     xhtml_path = tmp_path / "test.xhtml"
-    
+
     # Create a synthetic XHTML content
     xhtml_content = """<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
@@ -28,16 +30,17 @@ def test_load_from_xhtml(tmp_path: Path):
 </html>
 """
     xhtml_path.write_text(xhtml_content, encoding="utf-8")
-    
+
     sections = load_from_xhtml(xhtml_path)
-    
+
     assert "summary" in sections
     assert "issuer" in sections
     assert "risks" in sections
-    
+
     assert "plain-language summary" in sections["summary"]
     assert "EuroStable AG" in sections["issuer"]
     assert "market price volatility" in sections["risks"]
+
 
 def test_load_whitepaper_xhtml_type_inference(tmp_path: Path):
     xhtml_path = tmp_path / "art-test.xhtml"
@@ -53,9 +56,87 @@ def test_load_whitepaper_xhtml_type_inference(tmp_path: Path):
 </html>
 """
     xhtml_path.write_text(xhtml_content, encoding="utf-8")
-    
+
     wp = load_whitepaper(xhtml_path)
     assert wp.title == "Art Test"
     assert wp.type == WhitepaperType.ART
     assert "summary" in wp.sections
     assert "art" in wp.sections
+
+
+def test_bold_headings_are_detected(tmp_path: Path):
+    path = tmp_path / "bold.html"
+    path.write_text(
+        "<html><body>"
+        "<p><strong>Risk Factors</strong></p>"
+        "<p>Market volatility is a principal risk.</p>"
+        "<div><b>Information about the Issuer</b></div>"
+        "<p>The issuer is EuroStable AG.</p>"
+        "<b>Summary of the offer</b>"
+        "<p>Plain-language summary.</p>"
+        "<p>Body text with a <b>bold</b> word that is not a heading.</p>"
+        "</body></html>",
+        encoding="utf-8",
+    )
+    sections = load_from_xhtml(path)
+    joined = "\n".join(sections.values())
+    assert "Market volatility is a principal risk." in joined
+    assert "The issuer is EuroStable AG." in joined
+    assert "Plain-language summary." in joined
+    assert "Risk Factors" not in joined
+    assert "bold word that is not a heading" in joined
+    assert len(sections) >= 3
+
+
+def test_block_boundaries_separate_words_and_inline_spacers_do_not(tmp_path: Path):
+    path = tmp_path / "blocks.html"
+    path.write_text(
+        "<html><body>\n"
+        '<h2 id="issuer-info">Information about the<br/>issuer</h2>\n'
+        "<p>The issuer is EuroStable AG.<br/>Its seat is in Frankfurt.</p>\n"
+        "<p><b>Risk</b><br/><b>Factors</b></p>\n"
+        "<ul><li><p>Market risk.</p><p>Liquidity risk.</p></li></ul>\n"
+        '<p>Holders can lose the val<span class="_ _0"></span>ue of the token.</p>\n'
+        "</body></html>",
+        encoding="utf-8",
+    )
+    sections = load_from_xhtml(path)
+    assert sections["issuer"] == "The issuer is EuroStable AG. Its seat is in Frankfurt."
+    assert "Market risk.\nLiquidity risk." in sections["risks"]
+    assert "lose the value of the token" in sections["risks"]
+    # Finding anchors and SARIF lines read the heading as the loader does.
+    assert _xhtml_section_identifiers(path)["issuer"] == "xhtml:issuer-info"
+    assert _xhtml_heading_lines(path)["issuer"] == 2
+
+
+def test_word_broken_after_its_hyphen_at_a_line_break_keeps_its_hyphen(tmp_path: Path):
+    path = tmp_path / "hyphen.html"
+    path.write_text(
+        "<html><body><h2>Information about the<br/>issuer</h2>"
+        "<p>The issuer of the crypto-<br/>\n  asset is EuroStable AG.<br/>Field 02 -<br/>none.</p>"
+        "</body></html>",
+        encoding="utf-8",
+    )
+    # As at a line end in a PDF, DOCX or Markdown draft; a dash after a space is not a broken word.
+    assert (
+        load_from_xhtml(path)["issuer"] == "The issuer of the crypto-asset is EuroStable AG. Field 02 - none."
+    )
+
+
+def test_nested_blocks_are_read_once(tmp_path: Path):
+    path = tmp_path / "nested.html"
+    path.write_text(
+        "<html><body><h2>Risk Factors</h2>"
+        "<ul><li><p>Market risk.</p><p>Liquidity risk.</p></li>"
+        "<li>Custody risk.<ul><li>Loss of keys.</li></ul></li></ul>"
+        "<div><ul><li>Loss of value.</li></ul></div>"
+        "</body></html>",
+        encoding="utf-8",
+    )
+    assert load_from_xhtml(path)["risks"].split("\n") == [
+        "Market risk.",
+        "Liquidity risk.",
+        "Custody risk.",
+        "Loss of keys.",
+        "Loss of value.",
+    ]

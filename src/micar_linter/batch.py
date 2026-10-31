@@ -212,9 +212,7 @@ STUDY_RULES: tuple[StudyRule, ...] = (
         rule_id="ANNEX_I_PART_D_03_IMPLEMENTATION_PERSONS",
         annex_item="Annex I, Part D, item 3",
         label="Persons involved in crypto-asset project implementation",
-        missing_element=(
-            "natural or legal persons involved in implementation of the crypto-asset project"
-        ),
+        missing_element=("natural or legal persons involved in implementation of the crypto-asset project"),
         required_patterns=(
             r"\bdesign and development\b",
             r"\bpersons? involved\b",
@@ -336,6 +334,8 @@ def build_batch_review_pack(root: Path, generated_at: datetime | None = None) ->
                 [warning for warning in warnings if warning.startswith("unsupported-file:")]
             ),
             "blocked_files": len([item for item in files if item["blocker_rule_ids"]]),
+            # Files that could not be linted, e.g. numbered-field XHTML without a stated regime.
+            "failed_files": len([warning for warning in warnings if warning.startswith("lint-failed:")]),
         },
         "files": files,
         "warnings": warnings,

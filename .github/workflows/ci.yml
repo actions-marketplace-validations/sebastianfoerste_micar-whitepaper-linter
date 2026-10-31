@@ -6,6 +6,12 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
+env:
+  UV_LOCKED: "1"
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -13,13 +19,44 @@ jobs:
       matrix:
         python-version: ["3.13", "3.14"]
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           python-version: ${{ matrix.python-version }}
-      - run: python -m pip install --upgrade pip
-      - run: pip install -e ".[dev]"
-      - run: ruff check .
-      - run: pytest -q
-      - name: Lint the example ART whitepaper
-        run: python -m micar_linter examples/art-stablecoin.json
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+      - name: Install from lockfile
+        run: uv sync --locked --extra dev
+      - name: Lint, test, smoke, review bundle, playground and template checks
+        run: make check
+
+  # Runs action.yml from this checkout, so a broken Action shows up before the v1 tag moves.
+  action:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Strict run on a draft with open blockers
+        id: strict
+        continue-on-error: true
+        uses: ./
+        with:
+          whitepaper: examples/incomplete.json
+          annotations: 'false'
+      - name: Report-mode run on a DOCX draft
+        id: docx
+        uses: ./
+        with:
+          whitepaper: examples/sample-draft.docx
+          strict: 'false'
+          extra-args: --type other
+          annotations: 'false'
+      - name: Strict run fails and both runs write a SARIF log
+        env:
+          STRICT_OUTCOME: ${{ steps.strict.outcome }}
+          STRICT_SARIF: ${{ steps.strict.outputs.sarif-file }}
+          DOCX_SARIF: ${{ steps.docx.outputs.sarif-file }}
+        run: |
+          test "${STRICT_OUTCOME}" = failure
+          test -s "${STRICT_SARIF}"
+          test -s "${DOCX_SARIF}"

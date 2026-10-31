@@ -1,0 +1,19 @@
+name: micar-lint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint-whitepaper:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: sebastianfoerste/micar-whitepaper-linter@v1
+        with:
+          whitepaper: whitepaper.json
+          # Report mode: open findings do not fail the check; they are listed in the log.
+          # Set to 'true' to fail the build on any open BLOCKER before you notify the white paper or submit it for approval. The build then
+          # always fails: the iXBRL format BLOCKER never passes for whitepaper.json (see README).
+          strict: 'false'
