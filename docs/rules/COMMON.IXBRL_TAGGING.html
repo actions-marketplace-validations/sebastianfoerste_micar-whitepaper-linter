@@ -26,11 +26,11 @@
 <dt>Minimum words</dt><dd>0</dd>
 <dt>Listed terms (English)</dt><dd>none</dd>
 <dt>Listed terms (German)</dt><dd lang="de">none</dd>
-<dt>Package version</dt><dd>1.2.1, built from source that may include unreleased changes</dd>
+<dt>Package version</dt><dd>1.3.0, built from source that may include unreleased changes</dd>
 <dt>Source</dt><dd><a href="https://github.com/sebastianfoerste/micar-whitepaper-linter/blob/main/src/micar_linter/rules/common.py">rules/common.py</a></dd>
 </dl></div>
 <h2>How the status is set</h2>
-<ul class="plain"><li><strong>Missing</strong>: the draft is JSON, DOCX, PDF or Markdown, or a saved iXBRL viewer page. A viewer page packs the white paper into a script; the content checks read the unpacked text, and the viewer's rendering is not the XHTML document itself.</li><li><strong>Review</strong>: the draft is any other XHTML file. The check reports namespace problems and always adds that tag completeness was not checked.</li><li><strong>Pass</strong>: never. This is a fail-closed format gate.</li></ul>
+<ul class="plain"><li><strong>Missing</strong>: the draft is JSON, DOCX, PDF or Markdown, or a saved iXBRL viewer page. A viewer page packs the white paper into a script; the content checks read the unpacked text, and the viewer's rendering is not the XHTML document itself.</li><li><strong>Review</strong>: the draft is any other XHTML file. The check reports namespace problems and always adds that tag completeness was not checked. It knows the 2025 taxonomy (namespace date 2025-03-31); facts tagged in an ESMA MiCA namespace with another date, which ESMA uses for later releases, are named as a version the check does not know.</li><li><strong>Pass</strong>: never. This is a fail-closed format gate.</li></ul>
 <h2>Legal basis</h2>
 <p>Art. 2 Regulation (EU) 2024/2984</p>
 <ul class="plain"><li><a href="https://eur-lex.europa.eu/eli/reg_impl/2024/2984/oj/eng">https://eur-lex.europa.eu/eli/reg_impl/2024/2984/oj/eng</a></li></ul>
@@ -47,6 +47,6 @@
 <p class="small muted">Disagree with this rule, or missing one? <a href="https://github.com/sebastianfoerste/micar-whitepaper-linter/issues/new?template=rule-proposal.yml">Propose a rule change</a>.</p>
 
 </main>
-<footer><span>MiCAR Whitepaper Linter 1.2.1 · MIT licence · First-pass screening, not legal advice.</span><span>Generated from the rule set by <code>scripts/build_rule_docs.py</code>.</span></footer>
+<footer><span>MiCAR Whitepaper Linter 1.3.0 · MIT licence · First-pass screening, not legal advice.</span><span>Generated from the rule set by <code>scripts/build_rule_docs.py</code>.</span></footer>
 </body>
 </html>
